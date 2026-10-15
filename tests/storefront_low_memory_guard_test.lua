@@ -260,6 +260,32 @@ do
 end
 
 -- ----------------------------------------------------
+-- Test: ETags saved in the catalog subprocess reach the parent's settings
+-- ----------------------------------------------------
+do
+    local StorefrontSettings = require("storefront_settings")
+    StorefrontSettings:delSetting("catalog_etag")
+    StorefrontSettings:delSetting("screensaver_catalog_etag")
+
+    -- Child: ETags go to the sink, not to the forked settings copy
+    CatalogClient._etag_sink = {}
+    CatalogClient.setStoredEtag('W/"main1"')
+    CatalogClient.setStoredScreensaverEtag('"ss1"')
+    check("child does not write ETag to settings", StorefrontSettings:readSetting("catalog_etag") == nil)
+    local msg = "OK:main=updated,ss=updated,rb=not_modified" .. CatalogClient.etagsToChildMsg()
+    CatalogClient._etag_sink = nil
+
+    -- Parent: ETags from the child message are saved
+    CatalogClient.applyEtagsFromChildMsg(msg)
+    check("parent saves main ETag from child msg", CatalogClient.getStoredEtag() == 'W/"main1"')
+    check("parent saves screensaver ETag from child msg", CatalogClient.getStoredScreensaverEtag() == '"ss1"')
+    check("result prefix survives after stripping ETags", msg:gsub("\nETAG [^\n]*", "") == "OK:main=updated,ss=updated,rb=not_modified")
+
+    StorefrontSettings:delSetting("catalog_etag")
+    StorefrontSettings:delSetting("screensaver_catalog_etag")
+end
+
+-- ----------------------------------------------------
 -- Test 7: Shmem accounting and isLowMemoryDevice on legacy Kindle kernels
 -- ----------------------------------------------------
 do

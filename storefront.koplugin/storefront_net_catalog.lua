@@ -32,6 +32,42 @@ local StorefrontSettings = require("storefront_settings")
 local CATALOG_URL_KEY = "catalog_url"
 local CATALOG_ETAG_KEY = "catalog_etag"
 
+-- In the catalog subprocess, ETags go to this table instead of settings: the child's
+-- settings are a forked copy, so the parent would never see them and its next flush
+-- would overwrite them on disk. The child sends them back with its result message.
+CatalogClient._etag_sink = nil
+
+local function saveEtag(key, etag)
+    if type(etag) ~= "string" or etag == "" then return end
+    if CatalogClient._etag_sink then
+        CatalogClient._etag_sink[key] = etag
+        return
+    end
+    StorefrontSettings:saveSetting(key, etag)
+    StorefrontSettings:flush()
+end
+
+function CatalogClient.etagsToChildMsg()
+    local out = {}
+    for key, etag in pairs(CatalogClient._etag_sink or {}) do
+        table.insert(out, "\nETAG " .. key .. " " .. etag)
+    end
+    return table.concat(out)
+end
+
+function CatalogClient.applyEtagsFromChildMsg(msg)
+    local any_saved = false
+    for key, etag in tostring(msg):gmatch("\nETAG (%S+) ([^\n]+)") do
+        if type(etag) == "string" and etag ~= "" then
+            StorefrontSettings:saveSetting(key, etag)
+            any_saved = true
+        end
+    end
+    if any_saved then
+        StorefrontSettings:flush()
+    end
+end
+
 function CatalogClient.getStoredEtag()
     local saved = StorefrontSettings:readSetting(CATALOG_ETAG_KEY)
     if type(saved) == "string" and saved ~= "" then
@@ -41,10 +77,7 @@ function CatalogClient.getStoredEtag()
 end
 
 function CatalogClient.setStoredEtag(etag)
-    if type(etag) == "string" and etag ~= "" then
-        StorefrontSettings:saveSetting(CATALOG_ETAG_KEY, etag)
-        StorefrontSettings:flush()
-    end
+    saveEtag(CATALOG_ETAG_KEY, etag)
 end
 
 function CatalogClient.clearStoredEtag()
@@ -71,10 +104,7 @@ function CatalogClient.getStoredReaderBackdropEtag()
 end
 
 function CatalogClient.setStoredReaderBackdropEtag(etag)
-    if type(etag) == "string" and etag ~= "" then
-        StorefrontSettings:saveSetting(RB_CATALOG_ETAG_KEY, etag)
-        StorefrontSettings:flush()
-    end
+    saveEtag(RB_CATALOG_ETAG_KEY, etag)
 end
 
 function CatalogClient.clearStoredReaderBackdropEtag()
@@ -91,10 +121,7 @@ function CatalogClient.getStoredScreensaverEtag()
 end
 
 function CatalogClient.setStoredScreensaverEtag(etag)
-    if type(etag) == "string" and etag ~= "" then
-        StorefrontSettings:saveSetting(SCREENSAVER_CATALOG_ETAG_KEY, etag)
-        StorefrontSettings:flush()
-    end
+    saveEtag(SCREENSAVER_CATALOG_ETAG_KEY, etag)
 end
 
 function CatalogClient.clearStoredScreensaverEtag()
@@ -988,6 +1015,7 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
 
     -- Run download AND JSON decoding AND disk writing inside child subprocess
     local pid, parent_read_fd = ffiutil.runInSubProcess(function(pid, child_write_fd)
+        CatalogClient._etag_sink = {}
         local ok, err = xpcall(function()
             collectgarbage("collect")
             local ok_dl, dl_status_or_err = CatalogClient.fetchCatalogToFile(target_url, staging_raw_catalog)
@@ -1105,7 +1133,7 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
             else
                 result_msg = "ERR_DOWNLOAD: " .. tostring(dl_status_or_err)
             end
-            if child_write_fd then ffiutil.writeToFD(child_write_fd, result_msg, true) end
+            if child_write_fd then ffiutil.writeToFD(child_write_fd, result_msg .. CatalogClient.etagsToChildMsg(), true) end
         end, debug.traceback)
 
         if not ok then
@@ -1171,6 +1199,8 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
             local child_msg = (ok_read and type(raw_msg) == "string" and raw_msg ~= "") and raw_msg or "SUBPROCESS_NO_MSG"
             logger.info("Storefront: catalog subprocess finished with msg:", tostring(child_msg))
             if StorefrontLogger then StorefrontLogger.info("Storefront: catalog subprocess finished with msg: " .. tostring(child_msg)) end
+            CatalogClient.applyEtagsFromChildMsg(child_msg)
+            child_msg = child_msg:gsub("\nETAG [^\n]*", "")
 
             local function safeReplace(src, dest)
                 local f_test = io.open(src, "rb")
