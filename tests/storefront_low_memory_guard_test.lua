@@ -199,6 +199,7 @@ do
         fp:close()
         check("staging plugins contains 1 repo", p_data and p_data.repos and #p_data.repos == 1)
         check("staging plugin repo name matches", p_data and p_data.repos[1].name == "testplugin")
+        check("staging plugins fetched_at is set for remote data", p_data and (p_data.fetched_at or 0) > 0)
         os.remove(tmp_plugins)
     end
 
@@ -223,6 +224,21 @@ do
         check("staging font family matches", f_data and f_data.repos[1].font_family == "TestFont")
         os.remove(tmp_fonts)
     end
+
+    -- Bundled fallback must stay stale so the next freshness check refetches
+    CatalogClient.processCatalogDataToStaging({ plugins = { { id = 102, name = "bundledplugin", full_name = "user/bundledplugin" } } }, tmp_plugins, tmp_patches, tmp_fonts, true)
+    local fb = io.open(tmp_plugins, "r")
+    if fb then
+        local b_data = json.decode(fb:read("*a"))
+        fb:close()
+        check("bundled staging plugins fetched_at is 0", b_data and b_data.fetched_at == 0)
+        check("bundled staging repo fetched_at is 0", b_data and b_data.repos and b_data.repos[1] and b_data.repos[1].fetched_at == 0)
+        os.remove(tmp_plugins)
+    else
+        check("bundled staging plugins file exists", false)
+    end
+    os.remove(tmp_patches)
+    os.remove(tmp_fonts)
 end
 
 -- ----------------------------------------------------

@@ -638,12 +638,13 @@ function CatalogClient.isRefreshing()
     return false
 end
 
-function CatalogClient.processCatalogDataToStaging(catalog_data, staging_plugins_file, staging_patches_file, staging_fonts_file)
+function CatalogClient.processCatalogDataToStaging(catalog_data, staging_plugins_file, staging_patches_file, staging_fonts_file, is_bundled)
     if not catalog_data or type(catalog_data) ~= "table" then
         return false, "invalid catalog format"
     end
     
-    local fetched_at = os.time()
+    -- Bundled data is stale: fetched_at = 0 makes the next freshness check refetch (same as updateCacheFromCatalog)
+    local fetched_at = is_bundled and 0 or os.time()
 
     local function getOwnerLogin(owner)
         if type(owner) == "string" then return owner
@@ -1002,6 +1003,7 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
                 return
             end
 
+            local used_bundled = false
             if not ok_dl and not main_not_mod then
                 logger.warn("Storefront: remote catalog download failed (" .. tostring(dl_status_or_err) .. "), attempting fallback to bundled catalog")
                 local bundled_path = CatalogClient.getBundledCatalogPath()
@@ -1014,6 +1016,7 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
                             df:close()
                             ok_dl = true
                             dl_status_or_err = "updated"
+                            used_bundled = true
                         end
                         bf:close()
                         collectgarbage("collect")
@@ -1034,7 +1037,7 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
                     collectgarbage("collect")
 
                     if ok_dec and type(parsed) == "table" then
-                        local ok_proc, proc_err = CatalogClient.processCatalogDataToStaging(parsed, staging_plugins_file, staging_patches_file, staging_fonts_file)
+                        local ok_proc, proc_err = CatalogClient.processCatalogDataToStaging(parsed, staging_plugins_file, staging_patches_file, staging_fonts_file, used_bundled)
                         parsed = nil
                         collectgarbage("collect")
                         if ok_proc then
@@ -1088,7 +1091,7 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
 
             collectgarbage("collect")
 
-            local res_main = main_proc_ok and "updated" or (main_not_mod and "not_modified" or ("err:" .. tostring(dl_status_or_err)))
+            local res_main = main_proc_ok and (used_bundled and "bundled" or "updated") or (main_not_mod and "not_modified" or ("err:" .. tostring(dl_status_or_err)))
             local res_ss = ss_proc_ok and "updated" or (ss_not_mod and "not_modified" or ("err:" .. tostring(ss_status_or_err)))
             local res_rb = rb_proc_ok and "updated" or (rb_not_mod and "not_modified" or ("err:" .. tostring(rb_status_or_err)))
 
@@ -1202,6 +1205,12 @@ function CatalogClient.fetchAndUpdateCacheAsync(url_to_fetch, callback, is_backg
 
             local is_ok_not_modified = (child_msg == "OK_NOT_MODIFIED" or child_msg:find("^OK_NOT_MODIFIED") ~= nil)
             local is_ok = (child_msg == "OK" or child_msg:find("^OK") ~= nil)
+
+            -- Bundled fallback: drop the stored ETag so the next fetch can't 304 and freeze the bundled list as fresh.
+            -- Cleared here, not in the child: the next fork inherits the parent's in-memory settings.
+            if child_msg:find("main=bundled", 1, true) then
+                CatalogClient.clearStoredEtag()
+            end
 
             if is_ok_not_modified and not (ok_swap_p or ok_swap_pt or ok_swap_f or ok_swap_ss or ok_swap_rb) then
                 CatalogClient.setLastFetchedScreensavers(os.time())
