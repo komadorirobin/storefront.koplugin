@@ -7829,7 +7829,6 @@ function Storefront:filterAndSortScreensavers(catalog, opts)
         local scores = {}
         local titles = {}
         for _, entry in ipairs(list) do
-            local live_r = has_live and (liveRatings[entry.id] or (entry.name and liveRatings[entry.name])) or nil
             dl_scores[entry] = (live_r and live_r.downloads) or entry.downloads or entry.download_count or entry.downloads_count or entry.installs or 0
             scores[entry] = (live_r and (live_r.up - live_r.down)) or entry.likes or 0
             titles[entry] = entry._title_lower or (entry.title or entry.name or ""):lower()
@@ -8494,6 +8493,9 @@ function Storefront:buildScreensaverEntries(available_list_height, available_lis
             end
             local ok_cov, res_cov = pcall(StorefrontScreensavers.createCoverImageWidget, path, inner_w, img_h)
             if ok_cov and res_cov then
+                if card._img_widget[1] and card._img_widget[1].free then
+                    pcall(card._img_widget[1].free, card._img_widget[1])
+                end
                 card._img_widget[1] = res_cov
                 if self_ref.browser_menu then
                     UIManager:setDirty(self_ref.browser_menu, "ui")
