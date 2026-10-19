@@ -304,6 +304,36 @@ describe("storefront_installer", function()
             assert.equal("", info.prefix)
         end)
 
+        for _, plugin_first in ipairs({ false, true }) do
+            it("prefers a .koplugin sibling on equal depth (plugin first: " .. tostring(plugin_first) .. ")", function()
+                local paths = { "wrapper/docs/_meta.lua", "wrapper/sample.koplugin/_meta.lua" }
+                if plugin_first then paths[1], paths[2] = paths[2], paths[1] end
+                local info = storefront_installer.detectPluginFromArchive(archive(paths), { name = "sample.koplugin" })
+                assert.equal("sample.koplugin", info.plugin_dirname)
+                assert.equal("wrapper/sample.koplugin/", info.prefix)
+            end)
+        end
+
+        it("does not prefer a deeper .koplugin component over its outer plugin", function()
+            local info = storefront_installer.detectPluginFromArchive(archive({
+                "wrapper/_meta.lua",
+                "wrapper/embedded.koplugin/_meta.lua",
+            }), { name = "wrapper" })
+            assert.equal("wrapper.koplugin", info.plugin_dirname)
+            assert.equal("wrapper/", info.prefix)
+        end)
+
+        for _, suffix in ipairs({ "", ".koplugin" }) do
+            it("resolves remaining equal-depth ties consistently (suffix: " .. suffix .. ")", function()
+                local paths = { "wrapper/a" .. suffix .. "/_meta.lua", "wrapper/z" .. suffix .. "/_meta.lua" }
+                local first = storefront_installer.detectPluginFromArchive(archive(paths))
+                paths[1], paths[2] = paths[2], paths[1]
+                local reversed = storefront_installer.detectPluginFromArchive(archive(paths))
+                assert.equal("wrapper/a" .. suffix .. "/_meta.lua", first.meta_entry.path)
+                assert.equal(first.meta_entry.path, reversed.meta_entry.path)
+            end)
+        end
+
         it("does not treat a similarly named Lua file as plugin metadata", function()
             local info = storefront_installer.detectPluginFromArchive(archive({
                 "sample.koplugin/_meta.lua",
