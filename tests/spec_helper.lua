@@ -42,16 +42,17 @@ package.loaded["dispatcher"] = {
 
 package.loaded["lfs"] = {
     attributes = function(path, req)
+        local is_file = path and (path:match("%.jpg$") or path:match("%.png$") or path:match("%.lua$") or path:match("%.disabled$") or path:match("%.zip$"))
+        local mode = is_file and "file" or "directory"
+        local size = is_file and 1234 or 4096
         if req == "mode" then
-            if path and (path:match("%.jpg$") or path:match("%.png$") or path:match("%.lua$") or path:match("%.disabled$") or path:match("%.zip$")) then
-                return "file"
-            end
-            return "directory"
+            return mode
+        elseif req == "size" then
+            return size
+        elseif req == "modification" then
+            return os.time()
         end
-        if path and (path:match("%.jpg$") or path:match("%.png$") or path:match("%.lua$") or path:match("%.disabled$") or path:match("%.zip$")) then
-            return { mode = "file", size = 1234, modification = os.time() }
-        end
-        return { mode = "directory", size = 4096, modification = os.time() }
+        return { mode = mode, size = size, modification = os.time() }
     end,
     dir = function(path)
         local dummy_state = { __name = "directory", path = path }

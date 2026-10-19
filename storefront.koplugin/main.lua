@@ -1109,8 +1109,9 @@ local function computeFileSha1(path)
         return nil
     end
     local ok_lfs2, lfs2 = pcall(require, "libs/libkoreader-lfs")
-    local fsize = ok_lfs2 and lfs2 and lfs2.attributes and lfs2.attributes(path, "size")
-    if fsize and fsize > MAX_SHA1_FILE_BYTES then
+    local attr_size = ok_lfs2 and lfs2 and lfs2.attributes and lfs2.attributes(path, "size")
+    local fsize = type(attr_size) == "table" and (attr_size.size or attr_size[1]) or attr_size
+    if fsize and type(fsize) == "number" and fsize > MAX_SHA1_FILE_BYTES then
         return nil
     end
     local file = io.open(path, "rb")

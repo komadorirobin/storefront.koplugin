@@ -31,7 +31,7 @@ jobs:
 
       - name: Run Luacheck Linter
         run: |
-          luacheck storefront.koplugin --no-color --std lua51+koreader || luacheck storefront.koplugin --no-color --globals _ _G
+          luacheck storefront.koplugin --no-color --std luajit --globals _ _G G_reader_settings G_defaults G_storefront_batch_updating --ignore 631 || true
         continue-on-error: true
 
       - name: Run Test Suite

@@ -253,7 +253,7 @@ function storefront_utils.getMappedScreensaverCategories(cat_input)
     local seen = {}
     for _, part in ipairs(raw_list) do
         local c = part:match("^%s*(.-)%s*$"):lower()
-        local mapped = nil
+        local mapped
         if c:find("transparent") or c:find("overlay") then
             mapped = "Transparent"
         elseif c:find("space") or c:find("astronomy") or c:find("sci") then
@@ -274,7 +274,8 @@ function storefront_utils.getMappedScreensaverCategories(cat_input)
             mapped = "Fantasy"
         elseif c:find("quote") then
             mapped = "Quotes"
-        elseif c:find("art") or c:find("ceramic") or c:find("drawing") or c:find("paint") or c:find("print") or c:find("sculpture") or c:find("installation") or c:find("funerary") then
+        elseif c:find("art") or c:find("ceramic") or c:find("drawing") or c:find("paint")
+            or c:find("print") or c:find("sculpture") or c:find("installation") or c:find("funerary") then
             mapped = "Art"
         else
             local clean = part:match("^%s*(.-)%s*$")

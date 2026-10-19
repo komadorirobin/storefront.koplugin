@@ -57,7 +57,8 @@ local MAX_SHA1_FILE_BYTES = 20 * 1024 * 1024  -- 20 MB
 local function computeFileSha1(filepath)
     if not filepath or filepath == "" then return nil end
     local attr_size = lfs and lfs.attributes and lfs.attributes(filepath, "size")
-    if attr_size and attr_size > MAX_SHA1_FILE_BYTES then
+    local file_size = type(attr_size) == "table" and (attr_size.size or attr_size[1]) or attr_size
+    if file_size and type(file_size) == "number" and file_size > MAX_SHA1_FILE_BYTES then
         return nil
     end
     local file = io.open(filepath, "rb")
