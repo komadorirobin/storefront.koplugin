@@ -65,13 +65,18 @@ local function computeFileSha1(filepath)
     local content = file:read("*all")
     file:close()
     if not content then return nil end
+    local blob = string.format("blob %d\0", #content) .. content
+    local ok_sha2, sha2 = pcall(require, "ffi/sha2")
+    if ok_sha2 and sha2 and type(sha2.sha1) == "function" then
+        return sha2.sha1(blob)
+    end
     local ok, DataUtils = pcall(require, "datautils")
-    if ok and DataUtils and DataUtils.sha1 then
-        return DataUtils.sha1(content)
+    if ok and DataUtils and type(DataUtils.sha1) == "function" then
+        return DataUtils.sha1(blob)
     end
     local ok_hash, Hash = pcall(require, "ffi/sha1")
-    if ok_hash and Hash and Hash.sha1 then
-        return Hash.sha1(content)
+    if ok_hash and Hash and type(Hash.sha1) == "function" then
+        return Hash.sha1(blob)
     end
     return nil
 end
@@ -155,6 +160,31 @@ local function buildPatchRecordFields(filename, repo, patch_info, include_sha)
     return record
 end
 
+local function findCachedPatchFile(record, filename)
+    local lookup_name = (filename or (record and record.filename) or ""):gsub("%.disabled$", "")
+    if record and (record.repo_id or (record.owner and record.repo)) then
+        local cached_repo = (record.repo_id and Cache.getRepo and Cache.getRepo(record.repo_id))
+            or (record.owner and record.repo and Cache.getRepoByName and Cache.getRepoByName(record.owner, record.repo))
+        if cached_repo and cached_repo.repo_id and Cache.listPatchFiles then
+            local files = Cache.listPatchFiles(cached_repo.repo_id)
+            for _, f in ipairs(files or {}) do
+                if (record.path and f.path == record.path) or (lookup_name ~= "" and f.filename == lookup_name) then
+                    return cached_repo, {
+                        path = f.path,
+                        branch = f.branch,
+                        sha = f.sha,
+                        download_url = f.download_url,
+                    }
+                end
+            end
+        end
+    end
+    if lookup_name ~= "" and Cache.findPatchRepoAndFile then
+        return Cache.findPatchRepoAndFile(lookup_name)
+    end
+    return nil, nil
+end
+
 local function buildPatchSummary(remote_info)
     local installed = listInstalledPatches()
     local records = getPatchRecordsMap()
@@ -174,8 +204,8 @@ local function buildPatchSummary(remote_info)
         end
         local local_sha = computeFileSha1(installed_patch.path)
         local remote_entry = remote_info and remote_info[installed_patch.filename]
-        if (not remote_entry or remote_entry.error) and record and record.owner and record.repo then
-            local repo, file_map = Cache.findPatchRepoAndFile(installed_patch.filename)
+        if (not remote_entry or remote_entry.error or not remote_entry.remote_sha) and record and record.owner and record.repo then
+            local _, file_map = findCachedPatchFile(record, installed_patch.filename)
             if file_map then
                 remote_entry = {
                     remote_sha = file_map.sha,
@@ -185,14 +215,14 @@ local function buildPatchSummary(remote_info)
             end
         end
         local remote_sha = (remote_entry and remote_entry.remote_sha)
-            or (record and record.sha)
+            or (not local_sha and record and record.sha)
         local installed_sha = record and record.sha
         local needs_update = false
         if record and remote_sha then
-            if installed_sha then
-                needs_update = StorefrontUtils.isShaDifferent(remote_sha, installed_sha)
-            elseif local_sha then
+            if local_sha then
                 needs_update = StorefrontUtils.isShaDifferent(remote_sha, local_sha)
+            elseif installed_sha then
+                needs_update = StorefrontUtils.isShaDifferent(remote_sha, installed_sha)
             else
                 needs_update = true
             end
@@ -213,6 +243,7 @@ local function buildPatchSummary(remote_info)
             patch = installed_patch,
             record = record,
             remote_entry = remote_entry,
+            remote_sha = remote_sha,
             local_sha = local_sha,
             needs_update = needs_update,
         }
@@ -397,12 +428,22 @@ function M:init(Storefront)
             id = record.repo_id,
             description = record.repo_description,
         }
+        local remote_entry = self.patch_updates_state and self.patch_updates_state.remote_info and self.patch_updates_state.remote_info[record.filename]
+        if not remote_entry or not remote_entry.remote_sha then
+            local _, file_map = findCachedPatchFile(record, record.filename)
+            if file_map then
+                remote_entry = {
+                    remote_sha = file_map.sha,
+                    download_url = file_map.download_url,
+                }
+            end
+        end
         local patch_entry = {
             path = record.path,
             filename = record.filename,
             branch = record.branch or "HEAD",
-            download_url = record.download_url,
-            sha = record.sha,
+            download_url = (remote_entry and remote_entry.download_url) or record.download_url,
+            sha = (remote_entry and remote_entry.remote_sha) or record.sha,
         }
         local installed_patch = nil
         for _, p in ipairs(listInstalledPatches()) do
@@ -475,8 +516,12 @@ function M:init(Storefront)
             UIManager:show(InfoMessage:new{ text = _("Unable to store match for patch."), timeout = 4 })
             return
         end
+        local current_local_sha = computeFileSha1(patch.path)
+        if current_local_sha then
+            record.sha = current_local_sha
+        end
         InstallStore.upsertPatch(patch.filename, record)
-        self:updateSinglePatchStatus(patch.filename, record)
+        self:updateSinglePatchStatus(patch.filename, record, patch_entry.sha)
         self.match_context = nil
         self:closeBrowserMenu()
         UIManager:setDirty(nil, "ui")
@@ -594,18 +639,22 @@ function M:init(Storefront)
         self:updateSinglePatchStatus(filename, record)
     end
 
-    function Storefront:updateSinglePatchStatus(filename, record)
+    function Storefront:updateSinglePatchStatus(filename, record, remote_sha_override)
         if not filename or filename == "" then return end
         self:ensurePatchUpdatesState()
         local remote_info = self.patch_updates_state.remote_info or {}
         local entry = remote_info[filename] or {}
-        if record and record.sha then entry.remote_sha = record.sha end
+        local target_sha = remote_sha_override or (record and record.sha)
+        if target_sha then entry.remote_sha = target_sha end
         if record and record.download_url then entry.download_url = record.download_url end
         entry.last_checked = os.time()
         entry.error = nil
         remote_info[filename] = entry
         self.patch_updates_state.remote_info = remote_info
         self:savePatchUpdatesState()
+        self._cached_patch_summary = nil
+        self._merged_updates_cache = nil
+        self._cached_updates_count = nil
     end
 
     function Storefront:installPatchFromRepo(repo, patch)
@@ -718,8 +767,12 @@ function M:init(Storefront)
                 return
             end
 
+            local downloaded_sha = computeFileSha1(target_path)
             local stored_record = buildPatchRecordFields(target_filename, repo, patch, true)
             if stored_record then
+                if downloaded_sha then
+                    stored_record.sha = downloaded_sha
+                end
                 InstallStore.upsertPatch(target_filename, stored_record)
             end
             local disabled_path = PATCHES_ROOT .. "/" .. target_filename .. ".disabled"
@@ -729,6 +782,9 @@ function M:init(Storefront)
             end
             InstallStore.bumpGeneration()
             invalidateInstalledPatchesCache()
+            self._cached_patch_summary = nil
+            self._merged_updates_cache = nil
+            self._cached_updates_count = nil
 
             local is_update = self.pending_patch_install and self.pending_patch_install.mode == "update"
             local batch_cb = self.pending_patch_install and self.pending_patch_install.batch_callback
@@ -749,6 +805,9 @@ function M:init(Storefront)
             end
             if stored_record then
                 self:updateSinglePatchStatus(target_filename, stored_record)
+            end
+            if not is_batch and not _G.G_storefront_batch_updating and self.softRefreshCurrentBrowserView then
+                self:softRefreshCurrentBrowserView()
             end
             if batch_cb then
                 batch_cb(true)

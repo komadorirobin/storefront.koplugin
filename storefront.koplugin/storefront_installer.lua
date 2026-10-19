@@ -40,6 +40,10 @@ local socketutil = require("socketutil")
 local util = require("util")
 local startDownloadProgress = require("storefront_download_progress").start
 
+local ok_rapid, rapidjson = pcall(require, "rapidjson")
+local ok_json, json_mod = pcall(require, "json")
+local json = (ok_rapid and rapidjson) or (ok_json and json_mod) or nil
+
 local M = {}
 
 local function ensureCacheDir()
@@ -49,6 +53,235 @@ local function ensureCacheDir()
     local util = require("util")
     util.makePath(base)
     return base
+end
+
+local _staged_native_libs = {}
+local _native_libs_unlinked = false
+local _exit_hook_installed = false
+local _main_pid = nil
+
+local function isNativeLibraryPath(path)
+    if not path or type(path) ~= "string" then return false end
+    local filename = path:match("([^/\\]+)$") or path
+    filename = filename:lower()
+    return (filename:match("%.so$") ~= nil) or (filename:match("%.so%.[%d%.]+$") ~= nil)
+end
+
+local function getStagedNativeLibsPath()
+    local cache_dir = ensureCacheDir()
+    return cache_dir .. "/staged_native_libs.json"
+end
+
+local function saveStagedNativeLibsQueue(queue)
+    local path = getStagedNativeLibsPath()
+    if not queue or #queue == 0 then
+        os.remove(path)
+        return
+    end
+    local serialized = nil
+    if json and json.encode then
+        pcall(function() serialized = json.encode(queue) end)
+    end
+    if serialized then
+        local f = io.open(path, "w")
+        if f then
+            f:write(serialized)
+            f:close()
+        end
+    end
+end
+
+local function loadStagedNativeLibsQueue()
+    local path = getStagedNativeLibsPath()
+    local f = io.open(path, "r")
+    if not f then return {} end
+    local content = f:read("*a")
+    f:close()
+    if not content or content == "" then return {} end
+    local data = nil
+    if json and json.decode then
+        pcall(function() data = json.decode(content) end)
+    end
+    if type(data) == "table" then
+        return data
+    end
+    return {}
+end
+
+local function stageNativeLibrary(staged_path, target_path)
+    if not staged_path or not target_path then return end
+    for _, item in ipairs(_staged_native_libs) do
+        if item.target == target_path then
+            item.staged = staged_path
+            saveStagedNativeLibsQueue(_staged_native_libs)
+            return
+        end
+    end
+    table.insert(_staged_native_libs, {
+        staged = staged_path,
+        target = target_path,
+    })
+    saveStagedNativeLibsQueue(_staged_native_libs)
+end
+
+local function markNativeLibraryUnlinked(path)
+    _native_libs_unlinked = true
+end
+
+local function hasPendingNativeLibExitHazard()
+    return (_staged_native_libs and #_staged_native_libs > 0) or (_native_libs_unlinked == true)
+end
+
+local function getStagedNativeLibs()
+    return _staged_native_libs
+end
+
+local function clearStagedNativeLibs()
+    _staged_native_libs = {}
+    _native_libs_unlinked = false
+    os.remove(getStagedNativeLibsPath())
+end
+
+local function swapFile(staged, target)
+    if not staged or not target then return false end
+    if lfs.attributes(staged, "mode") ~= "file" then return false end
+
+    os.remove(target)
+    local ok, err = os.rename(staged, target)
+    if ok then
+        return true
+    end
+
+    local f_in = io.open(staged, "rb")
+    if not f_in then return false, err end
+    local f_out = io.open(target, "wb")
+    if not f_out then
+        f_in:close()
+        return false, "failed to open target for write"
+    end
+    local chunk_size = 65536
+    while true do
+        local chunk = f_in:read(chunk_size)
+        if not chunk then break end
+        f_out:write(chunk)
+    end
+    f_in:close()
+    f_out:close()
+    os.remove(staged)
+    return true
+end
+
+local function applyStagedNativeLibs()
+    if not _staged_native_libs or #_staged_native_libs == 0 then
+        local disk_queue = loadStagedNativeLibsQueue()
+        if disk_queue and #disk_queue > 0 then
+            _staged_native_libs = disk_queue
+        end
+    end
+
+    if _staged_native_libs and #_staged_native_libs > 0 then
+        for _, item in ipairs(_staged_native_libs) do
+            if item.staged and item.target then
+                if lfs.attributes(item.staged, "mode") == "file" then
+                    swapFile(item.staged, item.target)
+                end
+            end
+        end
+    end
+    clearStagedNativeLibs()
+end
+
+local function getCurrentPid()
+    local ok_ffi, ffi = pcall(require, "ffi")
+    if ok_ffi and ffi and ffi.C then
+        local ok_pid, pid = pcall(function() return ffi.C.getpid() end)
+        if ok_pid and pid then
+            return tonumber(pid)
+        end
+    end
+    return nil
+end
+
+local function declarePosixExit()
+    local ok_ffi, ffi = pcall(require, "ffi")
+    if ok_ffi and ffi then
+        pcall(function()
+            ffi.cdef[[
+                int getpid(void);
+                void _exit(int status);
+            ]]
+        end)
+    end
+end
+
+local function installSafeExitHook()
+    if _exit_hook_installed then return end
+    declarePosixExit()
+    _main_pid = getCurrentPid()
+    local orig_os_exit = _G.os.exit
+
+    _G.os.exit = function(code, close_state)
+        local cur_pid = getCurrentPid()
+        local is_main_proc = (not _main_pid) or (not cur_pid) or (cur_pid == _main_pid)
+
+        if is_main_proc and hasPendingNativeLibExitHazard() then
+            pcall(collectgarbage, "stop")
+            applyStagedNativeLibs()
+            pcall(function()
+                if io.stdout then io.stdout:flush() end
+                if io.stderr then io.stderr:flush() end
+            end)
+
+            local status = 0
+            if type(code) == "number" then
+                status = code
+            elseif code == false then
+                status = 1
+            elseif code == true then
+                status = 0
+            end
+
+            local ok_ffi, ffi = pcall(require, "ffi")
+            if ok_ffi and ffi and ffi.C and ffi.C._exit and not _G._STOREFRONT_TEST_NO_POSIX_EXIT then
+                ffi.C._exit(status)
+                return
+            end
+
+            if type(orig_os_exit) == "function" then
+                return orig_os_exit(status, false)
+            end
+            return
+        end
+
+        if type(orig_os_exit) == "function" then
+            return orig_os_exit(code, close_state)
+        end
+    end
+    _exit_hook_installed = true
+end
+
+local function recoverStagedNativeLibsOnStartup()
+    local disk_queue = loadStagedNativeLibsQueue()
+    if not disk_queue or #disk_queue == 0 then return end
+
+    local remaining = {}
+    for _, item in ipairs(disk_queue) do
+        local staged_mode = item.staged and lfs.attributes(item.staged, "mode")
+        local target_mode = item.target and lfs.attributes(item.target, "mode")
+        if staged_mode == "file" then
+            if target_mode ~= "file" then
+                swapFile(item.staged, item.target)
+            else
+                table.insert(remaining, item)
+            end
+        end
+    end
+
+    _staged_native_libs = remaining
+    saveStagedNativeLibsQueue(remaining)
+    if #remaining > 0 then
+        installSafeExitHook()
+    end
 end
 
 local function normalizeAssetVariantKey(filename)
@@ -266,6 +499,11 @@ local function extractPluginToUserDir(reader, info, dest_root)
     local prefix = info.prefix or ""
     local extracted_any = false
 
+    local protected_configs = {
+        ["storefront_config.lua"] = true,
+        ["storefront_configuration.lua"] = true,
+    }
+
     for entry in reader:iterate() do
         local path = entry.path
         if path and path:sub(1, #prefix) == prefix then
@@ -275,10 +513,30 @@ local function extractPluginToUserDir(reader, info, dest_root)
                 if entry.mode == "directory" then
                     util.makePath(full_dst)
                 elseif entry.mode == "file" then
-                    local parent = full_dst:match("^(.*)/")
-                    if parent then util.makePath(parent) end
-                    reader:extractToPath(entry.path, full_dst)
-                    extracted_any = true
+                    local is_protected = protected_configs[rel_path] and (lfs.attributes(full_dst, "mode") == "file")
+                    if not is_protected then
+                        local parent = full_dst:match("^(.*)/")
+                        if parent then util.makePath(parent) end
+
+                        local dst_to_extract = full_dst
+                        local is_native = isNativeLibraryPath(rel_path)
+                        local target_exists = (lfs.attributes(full_dst, "mode") == "file")
+
+                        if is_native and target_exists then
+                            dst_to_extract = full_dst .. ".new"
+                            os.remove(dst_to_extract)
+                        end
+
+                        reader:extractToPath(entry.path, dst_to_extract)
+                        extracted_any = true
+
+                        if is_native and target_exists then
+                            stageNativeLibrary(dst_to_extract, full_dst)
+                            installSafeExitHook()
+                        else
+                            os.remove(full_dst .. ".new")
+                        end
+                    end
                 end
             end
         end
@@ -292,6 +550,8 @@ local function extractPluginToUserDir(reader, info, dest_root)
 end
 
 function M:init(Storefront)
+    recoverStagedNativeLibsOnStartup()
+    installSafeExitHook()
     function Storefront:resolveNewInstallDestination(callback, on_cancel)
         local REMEMBERED_PLUGIN_INSTALL_PATH_KEY = "remembered_plugin_install_path"
         local ok_cfg, StorefrontConfig = pcall(require, "storefront_config")
@@ -2029,5 +2289,14 @@ end
 M.downloadToFile = downloadToFile
 M.detectPluginFromArchive = detectPluginFromArchive
 M.extractPluginToUserDir = extractPluginToUserDir
+M.isNativeLibraryPath = isNativeLibraryPath
+M.stageNativeLibrary = stageNativeLibrary
+M.getStagedNativeLibs = getStagedNativeLibs
+M.clearStagedNativeLibs = clearStagedNativeLibs
+M.applyStagedNativeLibs = applyStagedNativeLibs
+M.markNativeLibraryUnlinked = markNativeLibraryUnlinked
+M.hasPendingNativeLibExitHazard = hasPendingNativeLibExitHazard
+M.installSafeExitHook = installSafeExitHook
+M.recoverStagedNativeLibsOnStartup = recoverStagedNativeLibsOnStartup
 
 return M

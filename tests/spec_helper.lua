@@ -617,7 +617,16 @@ package.loaded["socketutil"] = {
     reset_timeout = function() end,
 }
 package.loaded["ffi/archiver"] = {}
-package.loaded["ffi/sha2"] = {}
+package.loaded["ffi/sha2"] = {
+    sha1 = function(data)
+        -- Lightweight deterministic hash mock for tests
+        local h = 0
+        for i = 1, #data do
+            h = (h * 31 + string.byte(data, i)) % 4294967296
+        end
+        return string.format("%040x", h)
+    end,
+}
 package.loaded["util"] = {
     trim = function(str) return str and str:gsub("^%s*(.-)%s*$", "%1") or "" end,
     split = function(str, sep)

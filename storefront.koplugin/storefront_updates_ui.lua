@@ -194,7 +194,7 @@ function StorefrontUpdatesUi:init(StorefrontClass)
             end
 
             if has_update and match_search then
-                local local_commit = (record and record.commit) or item.local_sha or ""
+                local local_commit = item.local_sha or (record and (record.sha or record.commit)) or ""
                 local remote_commit = (remote_entry and remote_entry.remote_sha) or item.remote_sha or ""
                 local local_ver = local_commit ~= "" and ("sha " .. local_commit:sub(1, 5)) or _("unknown")
                 local remote_ver = remote_commit ~= "" and ("sha " .. remote_commit:sub(1, 5)) or _("unknown")
@@ -244,11 +244,11 @@ function StorefrontUpdatesUi:init(StorefrontClass)
                         }
                         local patch_entry = {
                             filename = patch.filename,
-                            path = patch.path,
+                            path = (record and record.path) or patch.path,
                             display_path = record and record.path or patch.path,
-                            download_url = record and record.download_url,
+                            download_url = (remote_entry and remote_entry.download_url) or (record and record.download_url),
                             branch = record and record.branch or "HEAD",
-                            sha = record and record.sha,
+                            sha = (remote_entry and remote_entry.remote_sha) or item.remote_sha or (record and record.sha),
                         }
                         local details_dialog = DetailsDialog:new{
                             Storefront = self,

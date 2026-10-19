@@ -167,6 +167,13 @@ local function runTests()
     local ok_dp_suite, dp_err = pcall(dofile, script_dir .. "storefront_download_progress_test.lua")
     assertTest(ok_dp_suite, "Download Progress Suite Execution", dp_err)
 
+    -- ----------------------------------------------------
+    -- TEST 9: Patch Manager Suite Run
+    -- ----------------------------------------------------
+    print("\n--- TEST 9: Patch Manager Suite ---")
+    local ok_patch_suite, patch_err = pcall(dofile, script_dir .. "storefront_patch_mgr_test.lua")
+    assertTest(ok_patch_suite, "Patch Manager Suite Execution", patch_err)
+
     print("\n==================================================")
     print(string.format("  SUMMARY: %d Passed, %d Failed", passed, failed))
     print("==================================================")

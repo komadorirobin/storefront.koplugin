@@ -244,12 +244,13 @@ function UpdatesMgr:init(Storefront)
                     id = record.repo_id,
                     description = record.repo_description,
                 }
+                local remote_entry = item.remote_entry or (sf.patch_updates_state and sf.patch_updates_state.remote_info and sf.patch_updates_state.remote_info[record.filename])
                 local patch_entry = {
                     filename = record.filename,
                     path = record.path,
                     branch = record.branch or "HEAD",
-                    download_url = record.download_url,
-                    sha = record.sha,
+                    download_url = (remote_entry and remote_entry.download_url) or record.download_url,
+                    sha = (remote_entry and remote_entry.remote_sha) or item.remote_sha or record.sha,
                 }
                 sf.pending_patch_install = {
                     mode = "update",

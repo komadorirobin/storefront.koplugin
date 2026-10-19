@@ -4795,7 +4795,7 @@ function Storefront:rememberPatchInstall(filename, repo, patch_info)
     end
 end
 
-function Storefront:updateSinglePatchStatus(filename, record)
+function Storefront:updateSinglePatchStatus(filename, record, remote_sha_override)
     if not filename or filename == "" then
         return
     end
@@ -4808,12 +4808,16 @@ function Storefront:updateSinglePatchStatus(filename, record)
     local download_url = record.download_url
         or buildPatchDownloadUrl(record.owner, record.repo, record.branch or "HEAD", record.path)
     remote_info[filename] = {
-        remote_sha = record.sha,
+        remote_sha = remote_sha_override or record.sha,
         download_url = download_url,
         error = nil,
         last_checked = os.time(),
     }
     self.patch_updates_state.remote_info = remote_info
+    self:savePatchUpdatesState()
+    self._cached_patch_summary = nil
+    self._merged_updates_cache = nil
+    self._cached_updates_count = nil
 
     if self.patch_updates_menu then
         local scroll = self.patch_updates_menu.getScrollOffset and self.patch_updates_menu:getScrollOffset()
@@ -7338,17 +7342,21 @@ function Storefront:buildInstalledEntries(available_list_height)
                             description = record and record.repo_description or "",
                             stars = 0,
                         }
+                        local remote_entry = self.patch_updates_state and self.patch_updates_state.remote_info and self.patch_updates_state.remote_info[patch.filename]
                         local patch_entry = {
                             filename = patch.filename,
-                            path = patch.path,
+                            path = (record and record.path) or patch.path,
                             display_path = record and record.path or patch.path,
+                            download_url = (remote_entry and remote_entry.download_url) or (record and record.download_url),
+                            branch = record and record.branch or "HEAD",
+                            sha = (remote_entry and remote_entry.remote_sha) or (record and record.sha),
                         }
                         local details_dialog = DetailsDialog:new{
                             Storefront = self,
                             repo = repo,
                             patch = patch_entry,
                             kind = "patch",
-                            update_item = { patch = patch, record = record, needs_update = has_update },
+                            update_item = { patch = patch, record = record, remote_entry = remote_entry, needs_update = has_update },
                         }
                         details_dialog:show()
                     end,
@@ -10667,6 +10675,8 @@ extractPluginToUserDir = function(reader, info, dest_root)
 
     -- Remove only the files that the archive will replace so stale code
     -- from a previous version does not linger.
+    -- Native libraries are NOT unlinked while KOReader is running; they are staged as .new.
+    local ok_inst, StorefrontInstaller = pcall(require, "storefront_installer")
     if lfs.attributes(target_dir, "mode") == "directory" then
         local function remove_archive_files(dir, prefix)
             for f in lfs.dir(dir) do
@@ -10674,9 +10684,10 @@ extractPluginToUserDir = function(reader, info, dest_root)
                     local rel = (prefix == "") and f or (prefix .. "/" .. f)
                     local full = dir .. "/" .. f
                     local mode = lfs.attributes(full, "mode")
+                    local is_native = ok_inst and StorefrontInstaller and StorefrontInstaller.isNativeLibraryPath and StorefrontInstaller.isNativeLibraryPath(rel)
                     if mode == "directory" then
                         remove_archive_files(full, rel)
-                    elseif mode == "file" and archive_relatives[rel] and not protected_configs[rel] then
+                    elseif mode == "file" and archive_relatives[rel] and not protected_configs[rel] and not is_native then
                         os.remove(full)
                     end
                 end
@@ -10702,9 +10713,30 @@ extractPluginToUserDir = function(reader, info, dest_root)
                     if parent and parent ~= "" then
                         util.makePath(parent)
                     end
-                    local ok = reader:extractToPath(entry.path, dest_path)
+
+                    local dst_to_extract = dest_path
+                    local is_native = ok_inst and StorefrontInstaller and StorefrontInstaller.isNativeLibraryPath and StorefrontInstaller.isNativeLibraryPath(relative)
+                    local target_exists = (lfs.attributes(dest_path, "mode") == "file")
+
+                    if is_native and target_exists then
+                        dst_to_extract = dest_path .. ".new"
+                        os.remove(dst_to_extract)
+                    end
+
+                    local ok = reader:extractToPath(entry.path, dst_to_extract)
                     if not ok then
                         return false, _("Failed to extract file: ") .. entry.path
+                    end
+
+                    if is_native and target_exists then
+                        if ok_inst and StorefrontInstaller and StorefrontInstaller.stageNativeLibrary then
+                            StorefrontInstaller.stageNativeLibrary(dst_to_extract, dest_path)
+                        end
+                        if ok_inst and StorefrontInstaller and StorefrontInstaller.installSafeExitHook then
+                            StorefrontInstaller.installSafeExitHook()
+                        end
+                    else
+                        os.remove(dest_path .. ".new")
                     end
                 end
             end

@@ -74,6 +74,7 @@ local DeleteUI = {}
 local function deleteDirectoryRecursive(path)
     if not path or path == "" then return false, "invalid path" end
     if lfs.attributes(path, "mode") ~= "directory" then return false, "not a directory" end
+    local ok_inst, StorefrontInstaller = pcall(require, "storefront_installer")
     for entry in lfs.dir(path) do
         if entry ~= "." and entry ~= ".." then
             local full_path = path .. "/" .. entry
@@ -82,6 +83,14 @@ local function deleteDirectoryRecursive(path)
                 local ok, err = deleteDirectoryRecursive(full_path)
                 if not ok then return false, err end
             elseif mode == "file" then
+                if ok_inst and StorefrontInstaller and StorefrontInstaller.isNativeLibraryPath and StorefrontInstaller.isNativeLibraryPath(entry) then
+                    if StorefrontInstaller.markNativeLibraryUnlinked then
+                        StorefrontInstaller.markNativeLibraryUnlinked(full_path)
+                    end
+                    if StorefrontInstaller.installSafeExitHook then
+                        StorefrontInstaller.installSafeExitHook()
+                    end
+                end
                 local ok, err = os.remove(full_path)
                 if not ok then return false, err end
             end

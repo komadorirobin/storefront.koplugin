@@ -334,7 +334,8 @@ function StorefrontDetailsDialog:init()
             version_str = remote.release_tag_name or remote.tag_name or remote.remote_version or remote.version
         end
         if not version_str and remote_entry then
-            version_str = remote_entry.sha and ("sha:" .. remote_entry.sha:sub(1, 7)) or remote_entry.version
+            local r_sha = remote_entry.remote_sha or remote_entry.sha
+            version_str = r_sha and ("sha:" .. r_sha:sub(1, 7)) or remote_entry.version
         end
         if not version_str and plugin then
             version_str = plugin.version
@@ -1052,6 +1053,12 @@ function StorefrontDetailsDialog:init()
             callback = function()
                 self:onClose()
                 if self.patch then
+                    if self.Storefront then
+                        self.Storefront.pending_patch_install = {
+                            mode = "update",
+                            patch = (self.update_item and self.update_item.patch) or self.patch,
+                        }
+                    end
                     self.Storefront:installPatchFromRepo(self.repo, self.patch)
                 elseif is_branch_tracked and self.Storefront and type(self.Storefront.installPluginFromBranch) == "function" then
                     self.Storefront.pending_install_context = {
