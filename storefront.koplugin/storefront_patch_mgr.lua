@@ -446,8 +446,9 @@ function M:init(Storefront)
             download_url = (remote_entry and remote_entry.download_url) or record.download_url,
             sha = (remote_entry and remote_entry.remote_sha) or record.sha,
         }
+        local patch_list = self.listInstalledPatches and self:listInstalledPatches() or listInstalledPatches()
         local installed_patch = nil
-        for _, p in ipairs(listInstalledPatches()) do
+        for _, p in ipairs(patch_list) do
             if p.filename == record.filename then
                 installed_patch = p
                 break
@@ -466,7 +467,8 @@ function M:init(Storefront)
 
     function Storefront:startPatchMatchFlow(patch)
         if type(patch) == "string" then
-            for _, p in ipairs(listInstalledPatches()) do
+            local patch_list = self.listInstalledPatches and self:listInstalledPatches() or listInstalledPatches()
+            for _, p in ipairs(patch_list) do
                 if p.filename == patch then patch = p; break end
             end
             if type(patch) == "string" then patch = nil end
@@ -504,7 +506,8 @@ function M:init(Storefront)
 
     function Storefront:matchPatchWithRepo(patch, repo, patch_entry)
         if type(patch) == "string" then
-            for _, p in ipairs(listInstalledPatches()) do
+            local patch_list = self.listInstalledPatches and self:listInstalledPatches() or listInstalledPatches()
+            for _, p in ipairs(patch_list) do
                 if p.filename == patch then patch = p; break end
             end
             if type(patch) == "string" then patch = nil end
@@ -534,7 +537,8 @@ function M:init(Storefront)
 
     function Storefront:promptManualMatchForPatch(patch)
         if type(patch) == "string" then
-            for _, p in ipairs(listInstalledPatches()) do
+            local patch_list = self.listInstalledPatches and self:listInstalledPatches() or listInstalledPatches()
+            for _, p in ipairs(patch_list) do
                 if p.filename == patch then patch = p; break end
             end
             if type(patch) == "string" then patch = nil end

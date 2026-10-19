@@ -125,13 +125,13 @@ do
                 }
             }
         },
-        listInstalledPatches = function()
-            return {
-                { filename = "2-test.lua", path = "/tmp/2-test.lua" }
-            }
-        end,
     }
     storefront_patch_mgr:init(mockStorefront)
+    mockStorefront.listInstalledPatches = function()
+        return {
+            { filename = "2-test.lua", path = "/tmp/2-test.lua" }
+        }
+    end
 
     local passed_repo, passed_patch
     mockStorefront.installPatchFromRepo = function(self, repo, patch_entry)
