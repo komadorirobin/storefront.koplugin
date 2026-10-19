@@ -415,6 +415,7 @@ end
 local function detectPluginFromArchive(reader, repo)
     if not reader then return nil, _("Invalid archive reader") end
     local meta_entry = nil
+    local meta_depth = nil
     local root_dirs = {}
 
     for entry in reader:iterate() do
@@ -422,8 +423,14 @@ local function detectPluginFromArchive(reader, repo)
         if path then
             local root = path:match("^([^/]+)/")
             if root then root_dirs[root] = true end
-            if path:match("_meta%.lua$") then
-                meta_entry = entry
+            if entry.mode == "file" and (path == "_meta.lua" or path:match("/_meta%.lua$")) then
+                local _, depth = path:gsub("/", "")
+                -- Embedded components can have metadata too. The outer plugin
+                -- owns the install directory and must include those components.
+                if not meta_depth or depth < meta_depth then
+                    meta_entry = entry
+                    meta_depth = depth
+                end
             end
         end
     end
